@@ -1,35 +1,167 @@
 <!DOCTYPE html>
-<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Escanear serie</title>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Escanear serie - Registro de Equipos</title>
 <style>
-*{box-sizing:border-box}body{font:14px Arial,sans-serif;margin:0;background:#f3f6fb;color:#1c293b;padding:18px}
-main{max-width:520px;margin:auto;background:white;border-radius:14px;padding:20px;box-shadow:0 3px 15px #0001}
-h1{font-size:20px;margin:0 0 10px}p{line-height:1.5}#reader{min-height:230px;background:#eef1f5;border-radius:10px;overflow:hidden}
-button{width:100%;border:0;border-radius:9px;background:#1766d4;color:white;padding:13px;margin-top:12px;font-weight:bold}
-#estado{margin:12px 0;color:#9b2935;min-height:18px}.manual{display:flex;gap:8px;margin-top:15px}input{min-width:0;flex:1;border:1px solid #cbd5e1;border-radius:99px;padding:11px}.manual button{width:auto;margin:0}
-</style></head><body><main><h1>Escanear serie</h1><p>Apunta la cámara al código de barras o QR del equipo.</p>
-<div id="reader"></div><div id="estado" role="status"></div>
-<div class="manual"><input id="serie" maxlength="30" placeholder="O escribe la serie"><button id="usar">Usar serie</button></div>
-<button id="cerrar" type="button">Cerrar lector</button>
-</main><script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script><script>
-const token=new URLSearchParams(location.search).get('token');
-const estado=document.getElementById('estado');let lector=null, finalizado=false;
-async function terminar(serie){
- serie=String(serie||'').trim();if(finalizado)return;
- if(!serie||serie.length>30){estado.textContent='La serie debe tener entre 1 y 30 caracteres.';return;}
- finalizado=true;
- try{await lector?.stop()}catch(e){};
- if(window.opener && token){window.opener.postMessage({tipo:'SERIE_ESCANEADA',token,serie},'*');estado.textContent='Serie enviada. Regresa al formulario si esta pestaña no se cierra.';setTimeout(()=>window.close(),300);}
- else {estado.textContent='No se puede regresar automáticamente al formulario. Copia esta serie: '+serie;document.getElementById('serie').value=serie;}
+*{box-sizing:border-box}
+body{font:14px Arial,Helvetica,sans-serif;margin:0;background:#f3f6fb;color:#1c293b;padding:12px}
+main{max-width:520px;margin:auto;background:#fff;border-radius:14px;padding:17px;box-shadow:0 3px 15px #0001}
+h1{font-size:20px;margin:0 0 8px}p{line-height:1.45}
+#reader{min-height:250px;background:#eef1f5;border-radius:10px;overflow:hidden}
+#reader video{max-width:100%}
+#estado{margin:12px 0;min-height:20px;color:#304f77}
+.ajuste{background:#f4f7fc;border:1px solid #dce5f2;border-radius:10px;padding:12px;margin-top:12px}
+.ajuste label{display:flex;justify-content:space-between;font-weight:700;gap:10px}
+input[type=range]{width:100%;margin:14px 0 8px;accent-color:#1766d4}
+.acciones{display:flex;gap:8px}.acciones button{flex:1}
+button{border:1px solid #1766d4;border-radius:8px;background:#1766d4;color:white;padding:11px;font-weight:bold;cursor:pointer}
+button.secundario{background:#fff;color:#1766d4}
+button:disabled{opacity:.55}
+.manual{display:flex;gap:8px;margin-top:15px}
+.manual input{min-width:0;flex:1;border:1px solid #cbd5e1;border-radius:99px;padding:11px;font-size:14px}
+.manual button{flex-shrink:0}
+#cerrar{width:100%;margin-top:12px}
+.nota{font-size:12px;color:#65758a}
+</style>
+</head>
+<body>
+<main>
+<h1>Escanear serie</h1>
+<p>Apunta la cámara al código de barras o QR del equipo.</p>
+<div id="reader"></div>
+<div id="estado" role="status" aria-live="polite">Iniciando lector…</div>
+<div class="ajuste">
+  <label for="tamano">Área de detección <span id="porcentaje">70%</span></label>
+  <input id="tamano" type="range" min="35" max="95" step="5" value="70">
+  <div class="acciones">
+    <button class="secundario" id="reducir" type="button">− Reducir</button>
+    <button class="secundario" id="ampliar" type="button">+ Ampliar</button>
+  </div>
+  <p class="nota">El recuadro verde indica dónde colocar el código. Al soltar el control, el lector ajustará esa zona y reiniciará brevemente la cámara. No es zoom óptico.</p>
+</div>
+<div class="manual">
+  <input id="serie" maxlength="30" placeholder="O escribe la serie" autocomplete="off">
+  <button id="usar" type="button">Usar serie</button>
+</div>
+<button id="cerrar" type="button" class="secundario">Cerrar lector</button>
+</main>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+'use strict';
+const params = new URLSearchParams(location.search);
+const token = params.get('token');
+const estado = document.getElementById('estado');
+const rango = document.getElementById('tamano');
+const porcentaje = document.getElementById('porcentaje');
+let lector = null;
+let finalizado = false;
+let activo = false;
+let ocupado = false;
+let siguienteAjuste = false;
+let cerrarSolicitado = false;
+
+function mostrarPorcentaje(){porcentaje.textContent = rango.value + '%';}
+function areaDeteccion(ancho, alto){
+  // Área horizontal para etiquetas con códigos de barras; se limita al vídeo real.
+  const factor = Number(rango.value)/100;
+  const width = Math.max(90, Math.floor(ancho*factor));
+  const height = Math.max(70, Math.min(Math.floor(alto*.80), Math.floor(width*.52)));
+  return {width: Math.min(width,ancho), height: Math.min(height,alto)};
 }
+async function detener(){
+  if(lector && activo){
+    try{await lector.stop();}catch(e){console.warn('Detención:',e)}
+    activo=false;
+  }
+}
+async function iniciar(){
+  if(ocupado || finalizado || cerrarSolicitado){siguienteAjuste=true;return;}
+  ocupado=true;
+  estado.textContent='Ajustando área de detección…';
+  try{
+    await detener();
+    if(!lector){
+      lector=new Html5Qrcode('reader',{
+        formatsToSupport:[
+          Html5QrcodeSupportedFormats.QR_CODE,
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.CODE_39,
+          Html5QrcodeSupportedFormats.CODE_93,
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.EAN_8,
+          Html5QrcodeSupportedFormats.ITF,
+          Html5QrcodeSupportedFormats.UPC_A,
+          Html5QrcodeSupportedFormats.UPC_E
+        ],verbose:false
+      });
+    }
+    await lector.start({facingMode:'environment'},
+      {fps:12,qrbox:areaDeteccion,disableFlip:true},
+      texto=>terminar(texto),()=>{});
+    activo=true;
+    estado.textContent='Cámara activa. Coloca el código completo dentro del recuadro.';
+  }catch(e){
+    activo=false;
+    estado.textContent='No se pudo iniciar el lector: '+(e?.message||String(e));
+    console.error(e);
+  }finally{
+    ocupado=false;
+    if(siguienteAjuste && !finalizado && !cerrarSolicitado){
+      siguienteAjuste=false;
+      iniciar();
+    }
+  }
+}
+async function terminar(valor){
+  const serie=String(valor||'').trim();
+  if(finalizado || cerrarSolicitado)return;
+  if(!serie || serie.length>30){
+    estado.textContent='La serie debe tener entre 1 y 30 caracteres.';
+    return;
+  }
+  finalizado=true;
+  estado.textContent='Código detectado: '+serie;
+  await detener();
+  document.getElementById('serie').value=serie;
+  if(window.opener && token){
+    // La página principal debe validar origen y token antes de aceptar el mensaje.
+    window.opener.postMessage({tipo:'SERIE_ESCANEADA',token,serie},'*');
+    estado.textContent='Serie enviada. Regresa al formulario si esta pestaña no se cierra.';
+    setTimeout(()=>window.close(),350);
+  }else{
+    estado.textContent='Serie detectada: '+serie+'. Cópiala y regresa al formulario.';
+  }
+}
+function actualizarArea(){
+  mostrarPorcentaje();
+  if(!finalizado && !cerrarSolicitado){
+    if(ocupado){siguienteAjuste=true;}else{iniciar();}
+  }
+}
+rango.addEventListener('input',mostrarPorcentaje);
+rango.addEventListener('change',actualizarArea);
+document.getElementById('reducir').onclick=()=>{
+  rango.value=Math.max(35,Number(rango.value)-10);actualizarArea();
+};
+document.getElementById('ampliar').onclick=()=>{
+  rango.value=Math.min(95,Number(rango.value)+10);actualizarArea();
+};
 document.getElementById('usar').onclick=()=>terminar(document.getElementById('serie').value);
-document.getElementById('cerrar').onclick=async()=>{try{await lector?.stop()}catch(e){}window.close()};
-(async()=>{
- if(!navigator.mediaDevices?.getUserMedia){estado.textContent='La cámara no está disponible en este navegador o contexto.';return;}
- if(typeof Html5Qrcode==='undefined'){estado.textContent='No se pudo cargar la biblioteca de escaneo.';return;}
- try{
- lector=new Html5Qrcode('reader',{formatsToSupport:[Html5QrcodeSupportedFormats.QR_CODE,Html5QrcodeSupportedFormats.CODE_128,Html5QrcodeSupportedFormats.CODE_39,Html5QrcodeSupportedFormats.CODE_93,Html5QrcodeSupportedFormats.EAN_13,Html5QrcodeSupportedFormats.EAN_8,Html5QrcodeSupportedFormats.ITF,Html5QrcodeSupportedFormats.UPC_A,Html5QrcodeSupportedFormats.UPC_E],verbose:false});
- await lector.start({facingMode:'environment'},{fps:10,qrbox:(w,h)=>({width:Math.min(280,Math.floor(w*.8)),height:Math.min(170,Math.floor(h*.65))})},terminar,()=>{});
- }catch(e){estado.textContent='No se pudo abrir la cámara. Comprueba el permiso del navegador.';console.error(e)}
-})();
-</script></body></html>
+document.getElementById('cerrar').onclick=async()=>{
+  cerrarSolicitado=true;
+  await detener();
+  window.close();
+  estado.textContent='Lector cerrado. Puedes volver al formulario.';
+};
+if(!navigator.mediaDevices?.getUserMedia){
+  estado.textContent='Este navegador no permite acceder a la cámara.';
+}else if(typeof Html5Qrcode==='undefined'){
+  estado.textContent='No se pudo cargar la biblioteca de escaneo. Revisa tu conexión.';
+}else{
+  iniciar();
+}
+</script>
+</body>
+</html>
