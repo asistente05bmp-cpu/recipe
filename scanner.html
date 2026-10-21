@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Escanear serie</title>
+<style>
+*{box-sizing:border-box}body{font:14px Arial,sans-serif;margin:0;background:#f3f6fb;color:#1c293b;padding:18px}
+main{max-width:520px;margin:auto;background:white;border-radius:14px;padding:20px;box-shadow:0 3px 15px #0001}
+h1{font-size:20px;margin:0 0 10px}p{line-height:1.5}#reader{min-height:230px;background:#eef1f5;border-radius:10px;overflow:hidden}
+button{width:100%;border:0;border-radius:9px;background:#1766d4;color:white;padding:13px;margin-top:12px;font-weight:bold}
+#estado{margin:12px 0;color:#9b2935;min-height:18px}.manual{display:flex;gap:8px;margin-top:15px}input{min-width:0;flex:1;border:1px solid #cbd5e1;border-radius:99px;padding:11px}.manual button{width:auto;margin:0}
+</style></head><body><main><h1>Escanear serie</h1><p>Apunta la cámara al código de barras o QR del equipo.</p>
+<div id="reader"></div><div id="estado" role="status"></div>
+<div class="manual"><input id="serie" maxlength="30" placeholder="O escribe la serie"><button id="usar">Usar serie</button></div>
+<button id="cerrar" type="button">Cerrar lector</button>
+</main><script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script><script>
+const token=new URLSearchParams(location.search).get('token');
+const estado=document.getElementById('estado');let lector=null, finalizado=false;
+async function terminar(serie){
+ serie=String(serie||'').trim();if(finalizado)return;
+ if(!serie||serie.length>30){estado.textContent='La serie debe tener entre 1 y 30 caracteres.';return;}
+ finalizado=true;
+ try{await lector?.stop()}catch(e){};
+ if(window.opener && token){window.opener.postMessage({tipo:'SERIE_ESCANEADA',token,serie},'*');estado.textContent='Serie enviada. Regresa al formulario si esta pestaña no se cierra.';setTimeout(()=>window.close(),300);}
+ else {estado.textContent='No se puede regresar automáticamente al formulario. Copia esta serie: '+serie;document.getElementById('serie').value=serie;}
+}
+document.getElementById('usar').onclick=()=>terminar(document.getElementById('serie').value);
+document.getElementById('cerrar').onclick=async()=>{try{await lector?.stop()}catch(e){}window.close()};
+(async()=>{
+ if(!navigator.mediaDevices?.getUserMedia){estado.textContent='La cámara no está disponible en este navegador o contexto.';return;}
+ if(typeof Html5Qrcode==='undefined'){estado.textContent='No se pudo cargar la biblioteca de escaneo.';return;}
+ try{
+ lector=new Html5Qrcode('reader',{formatsToSupport:[Html5QrcodeSupportedFormats.QR_CODE,Html5QrcodeSupportedFormats.CODE_128,Html5QrcodeSupportedFormats.CODE_39,Html5QrcodeSupportedFormats.CODE_93,Html5QrcodeSupportedFormats.EAN_13,Html5QrcodeSupportedFormats.EAN_8,Html5QrcodeSupportedFormats.ITF,Html5QrcodeSupportedFormats.UPC_A,Html5QrcodeSupportedFormats.UPC_E],verbose:false});
+ await lector.start({facingMode:'environment'},{fps:10,qrbox:(w,h)=>({width:Math.min(280,Math.floor(w*.8)),height:Math.min(170,Math.floor(h*.65))})},terminar,()=>{});
+ }catch(e){estado.textContent='No se pudo abrir la cámara. Comprueba el permiso del navegador.';console.error(e)}
+})();
+</script></body></html>
